@@ -1,10 +1,10 @@
-name: 高端机 GCC编译
+name: 小米10 GCC编译 (骁龙865优化)
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: GCC编译
+    name: 小米10内核编译
     runs-on: ubuntu-latest
     if: github.event.repository.owner.id == github.event.sender.id
     
@@ -33,7 +33,7 @@ jobs:
         sudo -E apt-get -y -qq install build-essential gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi gcc-arm-linux-gnueabihf
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
   
-    # 移除Clang下载步骤 - 不再需要
+    # 注释掉Clang下载步骤，改为下载GCC工具链说明
     # - name: 下载Clang-aosp编译器
     #   run: |
     #     cd $GITHUB_WORKSPACE/kernel_workspace
@@ -84,14 +84,14 @@ jobs:
     - name: 设置ccache缓存
       uses: hendrikmuhs/ccache-action@v1.2
       with:
-        key: build-kernel-mido-kernel-gcc  # 修改缓存key避免冲突
+        key: build-kernel-sm8250-gcc  # 修改缓存key，避免与clang版本冲突
         max-size: 2G
 
-    - name: 开始编译内核 (使用GCC)
+    - name: 开始编译内核 (GCC - 骁龙865优化)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # 设置GCC编译环境变量
+        # 设置GCC编译环境
         export ARCH=arm64
         export SUBARCH=arm64
         export CROSS_COMPILE="ccache aarch64-linux-gnu-"
@@ -102,20 +102,26 @@ jobs:
         aarch64-linux-gnu-gcc --version | head -n 1
         arm-linux-gnueabi-gcc --version | head -n 1
         
-        # 清理之前的编译产物
-        rm -rf out
-        
         # 配置内核
         echo "配置内核: ${{ env.KERNEL_CONFIG }}"
         make -j$(nproc --all) O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
         
+        # 修复骁龙865 CPU类型兼容性问题
+        echo "应用骁龙865 GCC兼容性修复..."
+        
+        # 方法：使用cortex-a76 (与a77指令集兼容，GCC完全支持)
+        export KBUILD_CFLAGS="-mcpu=cortex-a76 -mtune=cortex-a76 -march=armv8.2-a+crypto+fp16+rcpc+dotprod"
+        export KBUILD_AFLAGS="-mcpu=cortex-a76"
+        
         # 编译内核
-        echo "开始编译内核..."
+        echo "开始编译内核 (骁龙865优化)..."
         make -j$(nproc --all) \
           O=out \
           ARCH=arm64 \
           CROSS_COMPILE="ccache aarch64-linux-gnu-" \
-          CROSS_COMPILE_ARM32="ccache arm-linux-gnueabi-"
+          CROSS_COMPILE_ARM32="ccache arm-linux-gnueabi-" \
+          KBUILD_CFLAGS="$KBUILD_CFLAGS" \
+          KBUILD_AFLAGS="$KBUILD_AFLAGS"
         
         # 验证编译结果
         if [ -f out/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }} ]; then
@@ -125,36 +131,28 @@ jobs:
           echo "❌ 内核编译失败!"
           exit 1
         fi
-
+                
     - name: 准备打包内核
       run: |       
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone https://github.com/osm0sis/AnyKernel3
         sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
         sed -i 's!block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!block=auto;!g' AnyKernel3/anykernel.sh
-        sed -i 's/is_slot_device=1;/is_slot_device=auto;/g' AnyKernel3/anykernel.sh
-        
-        # 复制内核镜像
+        sed -i 's/is_slot_device=1;/is_slot_device=auto;/g' AnyKernel3/anykernel.sh        
         cp android-kernel/out/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }} AnyKernel3/
-        
-        # 处理DTBO
         if [ "${{ env.NEED_DTBO }}" = "true" ]; then
             if [ -f android-kernel/out/arch/arm64/boot/dtbo.img ]; then
                 cp android-kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
                 echo "DTBO文件已复制"
-            else
-                echo "警告: NEED_DTBO=true 但未找到dtbo.img"
             fi
         fi
-        
-        # 清理不需要的文件
         rm -rf AnyKernel3/.git* AnyKernel3/README.md
         rm -rf AnyKernel3/ramdisk AnyKernel3/modules AnyKernel3/patch
        
     - name: 上传内核
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ env.KERNEL_ZIP_NAME }}-GCC  # 添加GCC标识
+        name: ${{ env.KERNEL_ZIP_NAME }}-GCC
         path: kernel_workspace/AnyKernel3/*
 
     - name: 上传dtbo镜像
