@@ -89,7 +89,9 @@ jobs:
     - name: 开始编译内核
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/clang-r450784d/bin:$PATH        
+        export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/clang-r450784d/bin:$PATH
+        export HOSTCC=gcc
+        export HOSTCXX=g++
         make -j$(nproc --all) O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }} HOSTCC=gcc HOSTCXX=g++
         
         if [ ${{env.LLVM_CONFIG}}=y ]; then
