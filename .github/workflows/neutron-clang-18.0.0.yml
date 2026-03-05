@@ -1,10 +1,11 @@
-name: 高端机 NeutronClang18
+name: 高端机 GCC编译
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    name: GCC编译
+    runs-on: ubuntu-latest
     if: github.event.repository.owner.id == github.event.sender.id
     
     steps:
@@ -25,40 +26,19 @@ jobs:
         cat config.env | grep ENABLE_KERNELSU= >> $GITHUB_ENV
         cat config.env | grep KERNELSU_TAG= >> $GITHUB_ENV
 
-    - name: 构建编译环境
+    - name: 构建编译内核环境
       run: |
         sudo apt-get update
-        sudo apt-get install -y \
-        git make bc bison flex \
-        ccache openssl zip kmod cpio \
-        libelf-dev curl libssl-dev \
-        wget device-tree-compiler \
-        python3 build-essential \
-        gcc g++ \
-        gcc-aarch64-linux-gnu \
-        gcc-arm-linux-gnueabi \
-        binutils-aarch64-linux-gnu \
-        binutils-arm-linux-gnueabi
-
+        sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+        sudo -E apt-get -y -qq install build-essential gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi gcc-arm-linux-gnueabihf
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
-
-    # ↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓
-    # 改成 Neutron clang 18
-    # ↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓
-
-    - name: 下载 Neutron clang18
-      run: |
-        cd $GITHUB_WORKSPACE/kernel_workspace
-        mkdir clang
-        cd clang
-
-        wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/18.0.0/neutron-clang-18.0.0.tar.zst
-        
-        sudo apt install -y zstd
-        
-        tar --zstd -xf neutron-clang-18.0.0.tar.zst
-        
-        echo "$PWD/bin" >> $GITHUB_PATH
+  
+    # 移除Clang下载步骤 - 不再需要
+    # - name: 下载Clang-aosp编译器
+    #   run: |
+    #     cd $GITHUB_WORKSPACE/kernel_workspace
+    #     mkdir clang-aosp
+    #     git clone -q --depth=1 --single-branch https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b android13-release clang-aosp
 
     - name: 下载内核源码
       run: |
@@ -79,77 +59,107 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace
         wget https://github.com/ego-taboo/LXC-DOCKER-KernelSU_Action/releases/download/1.0.0/runcpatch.sh
         chmod a+x runcpatch.sh
-
         if [ -f android-kernel/kernel/cgroup.c ]; then
-          ./runcpatch.sh android-kernel/kernel/cgroup.c               
+        ./runcpatch.sh android-kernel/kernel/cgroup.c               
         fi
-
         if [ -f android-kernel/kernel/cgroup/cgroup.c ]; then
-          ./runcpatch.sh android-kernel/kernel/cgroup/cgroup.c               
+        ./runcpatch.sh android-kernel/kernel/cgroup/cgroup.c               
         fi
   
-    - name: 配置 KernelSU
+    - name: 配置 ksu
       if: env.ENABLE_KERNELSU == 'true'
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s ${{ env.KERNELSU_TAG }}
+        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ env.KERNELSU_TAG }}
 
-    - name: 开启KVM
+    - name: 开启kvm
       if: env.ENABLE_KVM == 'true'
       run: |
          cd $GITHUB_WORKSPACE/kernel_workspace
          echo "CONFIG_VIRTUALIZATION=y" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
          echo "CONFIG_KVM=y" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
          echo "CONFIG_VHOST_NET=y" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
-
-    - name: 设置ccache
+         echo "CONFIG_VHOST_CROSS_ENDIAN_LEGACY=y" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
+                     
+    - name: 设置ccache缓存
       uses: hendrikmuhs/ccache-action@v1.2
       with:
-        key: kernel-build
+        key: build-kernel-mido-kernel-gcc  # 修改缓存key避免冲突
         max-size: 2G
 
-    # ↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓
-    # clang18 编译
-    # ↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓
-
-    - name: 开始编译内核
+    - name: 开始编译内核 (使用GCC)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
+        # 设置GCC编译环境变量
         export ARCH=arm64
         export SUBARCH=arm64
+        export CROSS_COMPILE="ccache aarch64-linux-gnu-"
+        export CROSS_COMPILE_ARM32="ccache arm-linux-gnueabi-"
+        
+        # 显示编译器版本
+        echo "使用GCC版本:"
+        aarch64-linux-gnu-gcc --version | head -n 1
+        arm-linux-gnueabi-gcc --version | head -n 1
+        
+        # 清理之前的编译产物
+        rm -rf out
+        
+        # 配置内核
+        echo "配置内核: ${{ env.KERNEL_CONFIG }}"
+        make -j$(nproc --all) O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
+        
+        # 编译内核
+        echo "开始编译内核..."
+        make -j$(nproc --all) \
+          O=out \
+          ARCH=arm64 \
+          CROSS_COMPILE="ccache aarch64-linux-gnu-" \
+          CROSS_COMPILE_ARM32="ccache arm-linux-gnueabi-"
+        
+        # 验证编译结果
+        if [ -f out/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }} ]; then
+          echo "✅ 内核编译成功!"
+          ls -lh out/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }}
+        else
+          echo "❌ 内核编译失败!"
+          exit 1
+        fi
 
-        export CC=clang
-        export HOSTCC=gcc
-        export HOSTCXX=g++
-
-        export LLVM=1
-        export LLVM_IAS=1
-
-        export CLANG_TRIPLE=aarch64-linux-gnu-
-        export CROSS_COMPILE=aarch64-linux-gnu-
-        export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-
-        make O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
-
-        make -j$(nproc) \
-        O=out \
-        ARCH=arm64 \
-        CC="ccache clang" \
-        KCFLAGS=-Wno-error \
-        KBUILD_CFLAGS="-mllvm -enable-eviction-advisor=0"
-
-    - name: 打包 AnyKernel3
-      run: |
+    - name: 准备打包内核
+      run: |       
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone https://github.com/osm0sis/AnyKernel3
+        sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+        sed -i 's!block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!block=auto;!g' AnyKernel3/anykernel.sh
+        sed -i 's/is_slot_device=1;/is_slot_device=auto;/g' AnyKernel3/anykernel.sh
         
+        # 复制内核镜像
         cp android-kernel/out/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }} AnyKernel3/
         
-        rm -rf AnyKernel3/.git*
-
+        # 处理DTBO
+        if [ "${{ env.NEED_DTBO }}" = "true" ]; then
+            if [ -f android-kernel/out/arch/arm64/boot/dtbo.img ]; then
+                cp android-kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
+                echo "DTBO文件已复制"
+            else
+                echo "警告: NEED_DTBO=true 但未找到dtbo.img"
+            fi
+        fi
+        
+        # 清理不需要的文件
+        rm -rf AnyKernel3/.git* AnyKernel3/README.md
+        rm -rf AnyKernel3/ramdisk AnyKernel3/modules AnyKernel3/patch
+       
     - name: 上传内核
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ env.KERNEL_ZIP_NAME }}
+        name: ${{ env.KERNEL_ZIP_NAME }}-GCC  # 添加GCC标识
         path: kernel_workspace/AnyKernel3/*
+
+    - name: 上传dtbo镜像
+      if: env.NEED_DTBO == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: dtbo-image-GCC
+        path: kernel_workspace/android-kernel/out/arch/arm64/boot/dtbo.img
