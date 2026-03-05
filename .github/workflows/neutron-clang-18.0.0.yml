@@ -1,0 +1,83 @@
+name: Build Kernel (Neutron clang 18)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+
+    - name: Checkout source
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y \
+        bc \
+        bison \
+        flex \
+        curl \
+        zip \
+        git \
+        make \
+        gcc \
+        g++ \
+        libssl-dev \
+        libelf-dev \
+        python3
+
+    - name: Download Neutron clang 18
+      run: |
+        mkdir clang
+        cd clang
+        wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/18.0.0/neutron-clang-18.0.0.tar.zst
+        tar --zstd -xf neutron-clang-18.0.0.tar.zst
+        rm neutron-clang-18.0.0.tar.zst
+        echo "$PWD/bin" >> $GITHUB_PATH
+
+    - name: Show clang version
+      run: |
+        clang --version
+
+    - name: Setup build environment
+      run: |
+        echo "ARCH=arm64" >> $GITHUB_ENV
+        echo "SUBARCH=arm64" >> $GITHUB_ENV
+
+    - name: Kernel config
+      run: |
+        export ARCH=arm64
+        make O=out ARCH=arm64 vendor/xiaomi_defconfig
+
+    - name: Build kernel
+      run: |
+        export ARCH=arm64
+        export SUBARCH=arm64
+
+        export CC=clang
+        export HOSTCC=gcc
+        export HOSTCXX=g++
+
+        export LLVM=1
+        export LLVM_IAS=1
+
+        export CLANG_TRIPLE=aarch64-linux-gnu-
+        export CROSS_COMPILE=aarch64-linux-android-
+
+        make -j$(nproc) \
+        O=out \
+        ARCH=arm64 \
+        KCFLAGS=-Wno-error \
+        KBUILD_CFLAGS="-mllvm -enable-eviction-advisor=0"
+
+    - name: Upload Image
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernel-image
+        path: |
+          out/arch/arm64/boot/Image
+          out/arch/arm64/boot/Image.gz
+          out/arch/arm64/boot/Image.gz-dtb
